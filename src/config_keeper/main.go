@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -15,7 +14,7 @@ import (
 )
 
 // VERSION of application
-const VERSION = "1.0.0"
+const VERSION = "1.0.1"
 
 // Params is struct to hold parameters
 type Params struct {
@@ -41,7 +40,11 @@ func main() {
 func writeDestination(destination string, data string) error {
 	fullDestination, err := filepath.Abs(destination)
 	if err != nil {
-		return errors.New("Unable to create absolute destination path")
+		return err
+	}
+	err = os.MkdirAll(filepath.Dir(fullDestination), 0744)
+	if err != nil {
+		return err
 	}
 	log.Printf("Saving to %s", fullDestination)
 	return ioutil.WriteFile(fullDestination, []byte(data), 0644)
