@@ -21,9 +21,10 @@ const VERSION = "2.0.0"
 
 // Params holds parameters
 type Params struct {
-	Servers     string
-	Paths       []string
-	Destination string
+	Servers         string
+	Paths           []string
+	Destination     string
+	RequireAllPaths bool
 }
 
 // ZkConn holds zookeeper connection
@@ -46,13 +47,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to read from zookeeper: %s", err)
 	}
+	log.Printf("Pulling from: %s", params.Paths[0])
 
 	for i := 1; i < len(params.Paths); i++ {
 		override, err := zkc.readZk(params.Paths[i])
-		if err != nil {
-			log.Fatalf("Failed to read from zookeeper: %s", err)
+		if err == nil {
+			log.Printf("Overriding with: %s", params.Paths[i])
+			data = combineData(data, override)
+		} else if params.RequireAllPaths {
+			log.Fatalf("Failed to read from zookeeper %s: %s", params.Paths[i], err)
+		} else {
+			log.Printf("Ignoring path not found: %s", params.Paths[i])
 		}
-		data = combineData(data, override)
 	}
 
 	err = writeDestination(params.Destination, data)
@@ -79,6 +85,7 @@ func parseParams() Params {
 	binName := filepath.Base(os.Args[0])
 	flag.StringVar(&params.Destination, "dest", "", "file destination")
 	flag.StringVar(&params.Servers, "zk", "", "zookeeper servers comma delimited")
+	flag.BoolVar(&params.RequireAllPaths, "requireall", false, "requireallpaths")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "\n%s %s:\n", binName, VERSION)
 		fmt.Fprintf(flag.CommandLine.Output(), "\nArguments:\n")
