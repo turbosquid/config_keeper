@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,46 +15,56 @@ import (
 	"time"
 
 	"github.com/go-zookeeper/zk"
+	"gopkg.in/yaml.v3"
 )
 
 // VERSION of application
-const VERSION = "2.0.0"
+const VERSION = "2.1.0"
 
 // Params holds parameters
 type Params struct {
 	Servers         string
+	ZookeeperConn   *zk.Conn
 	Paths           []string
 	Destination     string
+	FileType        string
 	RequireAllPaths bool
-}
-
-// ZkConn holds zookeeper connection
-type ZkConn struct {
-	Servers string
-	Conn    *zk.Conn
 }
 
 func main() {
 	params := parseParams()
 
-	zkc := &ZkConn{Servers: params.Servers}
-	err := zkc.connectZk()
-	if err != nil {
-		log.Fatalf("Failed to connect to zookeeper: %s", err)
+	if len(params.Servers) > 0 {
+		err := params.connectZk()
+		if err != nil {
+			log.Fatalf("Failed to connect to zookeeper: %s", err)
+		}
+		defer params.ZookeeperConn.Close()
 	}
-	defer zkc.Conn.Close()
 
-	data, err := zkc.readZk(params.Paths[0])
+	data, err := params.read(params.Paths[0])
 	if err != nil {
 		log.Fatalf("Failed to read from zookeeper: %s", err)
 	}
 	log.Printf("Pulling from: %s", params.Paths[0])
 
 	for i := 1; i < len(params.Paths); i++ {
-		override, err := zkc.readZk(params.Paths[i])
+		override, err := params.read(params.Paths[i])
 		if err == nil {
 			log.Printf("Overriding with: %s", params.Paths[i])
-			data = combineData(data, override)
+			switch fileType := params.FileType; fileType {
+			case "env":
+				data, err = combineEnv(data, override)
+			case "json":
+				data, err = combineJson(data, override)
+			case "yaml":
+				data, err = combineYaml(data, override)
+			default:
+				log.Fatalf("Unhandled file type: %s", fileType)
+			}
+			if err != nil {
+				log.Printf("Error combining files: %s", err)
+			}
 		} else if params.RequireAllPaths {
 			log.Fatalf("Failed to read from zookeeper %s: %s", params.Paths[i], err)
 		} else {
@@ -86,6 +97,7 @@ func parseParams() Params {
 	flag.StringVar(&params.Destination, "dest", "", "file destination")
 	flag.StringVar(&params.Servers, "zk", "", "zookeeper servers comma delimited")
 	flag.BoolVar(&params.RequireAllPaths, "requireall", false, "requireallpaths")
+	flag.StringVar(&params.FileType, "type", "env", "type of file (env, json, yaml)")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "\n%s %s:\n", binName, VERSION)
 		fmt.Fprintf(flag.CommandLine.Output(), "\nArguments:\n")
@@ -98,28 +110,45 @@ func parseParams() Params {
 	flag.Parse()
 	params.Paths = flag.Args()
 
-	if params.Servers == "" || params.Destination == "" || len(params.Paths) < 1 {
+	if params.Destination == "" || len(params.Paths) < 1 {
 		flag.Usage()
 		os.Exit(1)
 	}
 	return params
 }
 
-func (zkc *ZkConn) connectZk() error {
+func (params *Params) read(path string) (string, error) {
+	if len(params.Servers) > 0 {
+		return params.readZk(path)
+	} else {
+		return readFile(path)
+	}
+}
+
+func (params *Params) connectZk() error {
 	var err error
-	zkc.Conn, _, err = zk.Connect(strings.Split(zkc.Servers, ","), time.Second*5)
+	params.ZookeeperConn, _, err = zk.Connect(strings.Split(params.Servers, ","), time.Second*5)
 	return err
 }
 
-func (zkc *ZkConn) readZk(path string) (string, error) {
-	data, _, err := zkc.Conn.Get(path)
+func (params *Params) readZk(path string) (string, error) {
+	data, _, err := params.ZookeeperConn.Get(path)
 	if err != nil {
 		return "", err
 	}
 	return string(data), err
 }
 
-func combineData(a string, b string) string {
+func readFile(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	data, err := ioutil.ReadFile(absPath)
+	return string(data), err
+}
+
+func combineEnv(a string, b string) (string, error) {
 	data := make(map[string]string)
 	// Keep keys in slice because map does not preserve order
 	var keys []string
@@ -143,7 +172,43 @@ func combineData(a string, b string) string {
 	for _, key := range keys {
 		fmt.Fprintf(dataBytes, "%s=%s\n", key, data[key])
 	}
-	return dataBytes.String()
+	return dataBytes.String(), nil
+}
+
+func combineJson(a string, b string) (string, error) {
+	var data, override map[string]interface{}
+	if err := json.Unmarshal([]byte(a), &data); err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal([]byte(b), &override); err != nil {
+		return "", err
+	}
+	for k, v := range override {
+		data[k] = v
+	}
+	dataBytes, err := json.MarshalIndent(data, "", "    ")
+	if err != nil {
+		return "", err
+	}
+	return string(dataBytes), err
+}
+
+func combineYaml(a string, b string) (string, error) {
+	var data, override map[string]interface{}
+	if err := yaml.Unmarshal([]byte(a), &data); err != nil {
+		return "", err
+	}
+	if err := yaml.Unmarshal([]byte(b), &override); err != nil {
+		return "", err
+	}
+	for k, v := range override {
+		data[k] = v
+	}
+	dataBytes, err := yaml.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(dataBytes), err
 }
 
 func stringToSlice(a string) []string {
