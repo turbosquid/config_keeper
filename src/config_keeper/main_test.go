@@ -2,6 +2,7 @@ package main
 
 import (
 	"io/ioutil"
+	"os"
 	"strings"
 	"testing"
 
@@ -18,6 +19,17 @@ func TestCombineEnv(t *testing.T) {
 	combined, err := combineEnv(string(a), string(b))
 	assert.NoError(t, err)
 	assert.Equal(t, string(expected), combined, "The combined should match the expected")
+}
+
+func TestFilterEnv(t *testing.T) {
+	os.Setenv("e", "6")
+	b, err := ioutil.ReadFile("testdata/b.env")
+	assert.NoError(t, err)
+	expected, err := ioutil.ReadFile("testdata/override.env")
+	assert.NoError(t, err)
+	filtered, err := filterEnv(string(b), false)
+	assert.NoError(t, err)
+	assert.Equal(t, string(expected), filtered, "The filtered should match the expected")
 }
 
 func TestCombineJson(t *testing.T) {
