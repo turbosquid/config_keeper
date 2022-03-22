@@ -19,7 +19,7 @@ import (
 )
 
 // VERSION of application
-const VERSION = "2.1.0"
+const VERSION = "2.2.0"
 
 // Params holds parameters
 type Params struct {
@@ -29,6 +29,7 @@ type Params struct {
 	Destination     string
 	FileType        string
 	RequireAllPaths bool
+	OverrideEnvVar  bool
 }
 
 func main() {
@@ -72,6 +73,10 @@ func main() {
 		}
 	}
 
+	if params.FileType == "env" {
+		data, err = filterEnv(data, params.OverrideEnvVar)
+	}
+
 	err = writeDestination(params.Destination, data)
 	if err != nil {
 		log.Fatalf("Failed to write to destination: %s", err)
@@ -98,6 +103,7 @@ func parseParams() Params {
 	flag.StringVar(&params.Servers, "zk", "", "zookeeper servers comma delimited")
 	flag.BoolVar(&params.RequireAllPaths, "requireall", false, "requireallpaths")
 	flag.StringVar(&params.FileType, "type", "env", "type of file (env, json, yaml)")
+	flag.BoolVar(&params.OverrideEnvVar, "override", false, "override system environment variables")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "\n%s %s:\n", binName, VERSION)
 		fmt.Fprintf(flag.CommandLine.Output(), "\nArguments:\n")
@@ -146,6 +152,40 @@ func readFile(path string) (string, error) {
 	}
 	data, err := ioutil.ReadFile(absPath)
 	return string(data), err
+}
+
+func filterEnv(input string, override bool) (string, error) {
+	data := make(map[string]string)
+	// Keep keys in slice because map does not preserve order
+	var keys []string
+	lines := stringToSlice(input)
+
+	for _, line := range lines {
+		if !isEmptyLine(line) {
+			key, value, err := parseLine(line)
+			if err == nil {
+				// ignore comments
+				if key[0:1] != "#" {
+					_, present := os.LookupEnv(key)
+					// ignore existing environment vars
+					if override || !present {
+						keys = append(keys, key)
+						data[key] = value
+					} else {
+						log.Printf("Skipping key %s. Exists in system environment vars.", key)
+					}
+				}
+			} else {
+				log.Printf("Unable to parse line (%s): %s", err, line)
+			}
+		}
+	}
+
+	dataBytes := new(bytes.Buffer)
+	for _, key := range keys {
+		fmt.Fprintf(dataBytes, "%s=%s\n", key, data[key])
+	}
+	return dataBytes.String(), nil
 }
 
 func combineEnv(a string, b string) (string, error) {
